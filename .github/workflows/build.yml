@@ -17,22 +17,56 @@ jobs:
       matrix:
         include:
         - os: ubuntu-20.04
+          package_manager: "apt-get"
+
         - os: macos-11.0
+          package_manager: "brew"
+
         - os: windows-2019
-          cmake_toolchain_file: "C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
+          package_manager: "vcpkg"
 
     steps:
     - uses: actions/checkout@v2
+      with:
+        submodules: true
+
+    - name: Print configuration
+      run: |
+        export PACKAGES=$($GITHUB_WORKSPACE/scripts/install_prerequisites.sh -l -m ${{matrix.package_manager}} all)
+        echo "PACKAGES=$PACKAGES" >> $GITHUB_ENV
+        echo "runner.workspace: ${{runner.workspace}}"
+        echo "github.workspace: ${{github.workspace}}"
+        echo ""
+        echo "Using package manager: '${{matrix.package_manager}}'"
+        echo "  to install [$PACKAGES]"
+
+    - name: Env Test
+      run: |
+        echo "Using additional cache key: '${{env.PACKAGES}}'"
+        echo "(From env var: [$PACKAGES])"
+
+    - name: Setup vcpkg from submodule and restore any cached vcpkg ports
+      uses: lukka/run-vcpkg@v6
+      if: ${{ matrix.package_manager == 'vcpkg' }}
+      with:
+        setupOnly: true
+        vcpkgDirectory: '${{github.workspace}}/scripts/vcpkg'
+        appendedCacheKey: '${{env.PACKAGES}}'
+        vcpkgTriplet: x64-windows-static
+
+    - name: Setup CMake Toolchain file
+      if: ${{ matrix.package_manager == 'vcpkg' }}
+      run: export TOOLCHAIN_FILE="$(dirname $(which vcpkg) )/scripts/buildsystems/vcpkg.cmake"
 
     - name: Install Dependencies
-      run: $GITHUB_WORKSPACE/scripts/install_prerequisites.sh -v -u -m "apt-get brew vcpkg" all
+      run: $GITHUB_WORKSPACE/scripts/install_prerequisites.sh -v -u -m ${{matrix.package_manager}} all
 
     - name: Create Build Directory
       run: cmake -E make_directory ${{runner.workspace}}/build
 
     - name: Configure CMake
       working-directory: ${{runner.workspace}}/build
-      run: cmake -DCMAKE_TOOLCHAIN_FILE=${{matrix.cmake_toolchain_file}} -DCMAKE_BUILD_TYPE=$BUILD_TYPE $GITHUB_WORKSPACE
+      run: cmake -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" -DCMAKE_BUILD_TYPE=$BUILD_TYPE "$GITHUB_WORKSPACE"
 
     - name: Build
       working-directory: ${{runner.workspace}}/build
@@ -74,7 +108,7 @@ jobs:
         rsync -zarvm --include="*/" --include="*.html" --include="*.js" --include="*.wasm" --exclude="*" ${{runner.workspace}}/pangolin-build/examples ${{runner.workspace}}/www/emscripten
 
     - name: Deploy Examples to GitHub Pages
-      if: success()
+      if: success() && (github.ref == 'refs/heads/master')
       uses: crazy-max/ghaction-github-pages@v2.2.0
       with:
         target_branch: gh-pages
